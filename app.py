@@ -3,6 +3,7 @@ import pandas as pd
 import io
 
 # --- [1. 관리자 보안 설정] ---
+# 스트림릿 Settings -> Secrets에 password를 설정했다면 그걸 쓰고, 없으면 기본값 사용
 try:
     ADMIN_PASSWORD = st.secrets["password"]
 except:
@@ -11,7 +12,7 @@ except:
 
 st.set_page_config(page_title="원탑부동산 지번 역추적기", layout="wide")
 
-# [보안] 로그인 체크
+# [보안] 로그인 체크 로직
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 
@@ -26,16 +27,17 @@ if not st.session_state['logged_in']:
             st.error("비밀번호가 틀렸습니다.")
     st.stop()
 
-# --- [2. 메인 프로그램 (로그인 성공 시)] ---
-st.title("🕵️‍♂️ 원탑부동산 실거래가 지번 역추적기 (PRO 엔진)")
+# --- [2. 메인 프로그램 시작] ---
+st.title("🕵️‍♂️ 원탑부동산 실거래가 지번 역추적기 ")
 
 @st.cache_data
 def load_db():
     try:
+        # 수원시 마스터 DB 로드
         df = pd.read_csv('suwon_building_master_v3.csv')
         df['대장연도'] = df['useAprDay'].astype(str).str[:4]
         df['totArea'] = pd.to_numeric(df['totArea'], errors='coerce')
-        df['archArea'] = pd.to_numeric(df['archArea'], errors='coerce') # [PRO] 건축면적 대조 부활
+        df['archArea'] = pd.to_numeric(df['archArea'], errors='coerce')
         return df
     except Exception as e:
         st.error(f"마스터 DB 로드 실패: {e}")
@@ -48,9 +50,9 @@ if master_db is not None:
 
     if uploaded_file:
         try:
-            # 상단 안내문구 자동 스킵
+            # [PRO 로직] 안내문구를 자동으로 건너뛰고 진짜 헤더를 찾는 기능
             user_df = None
-            for i in range(15):
+            for i in range(20):
                 uploaded_file.seek(0)
                 if uploaded_file.name.endswith('.csv'):
                     temp_df = pd.read_csv(uploaded_file, skiprows=i, encoding='cp949')
@@ -62,7 +64,7 @@ if master_db is not None:
                     break
             
             if user_df is None:
-                st.error("파일에서 '도로명' 열을 찾을 수 없습니다. 양식을 확인해주세요.")
+                st.error("파일에서 '도로명' 열을 찾을 수 없습니다.")
                 st.stop()
 
             st.success("파일 분석 준비 완료!")
@@ -84,51 +86,50 @@ if master_db is not None:
                 p_bar = st.progress(0)
                 
                 for i, row in user_df.iterrows():
-                    # 1. 입력값 보정
+                    # 데이터 전처리
                     raw_road = str(row[col_road]).strip()
                     target_road = raw_road.split(' ')[-1] if ' ' in raw_road else raw_road
                     blind_jibun = str(row[col_jibun]).strip()
                     raw_year = str(row[col_year]).strip()[:4]
                     target_area = float(row[col_area]) if pd.notnull(row[col_area]) else 0
                     
-                    # [1차] 도로명 일치 검색
+                    # [PRO 엔진 핵심 로직: Soft Filter]
+                    # 1단계: 도로명 필터링
                     candidates = master_db[master_db['newPlatPlc'].str.contains(target_road, na=False)]
                     
                     if not candidates.empty:
-                        # [2차] 번지 앞자리 대조 (예: 5** 이면 5로 시작하는 번지만)
+                        # 2단계: 번지 앞자리 대조 (있는 경우에만 좁힘)
                         first_digit = blind_jibun[0] if blind_jibun and blind_jibun[0].isdigit() else ""
                         if first_digit:
-                            matched_jibun = candidates[candidates['platPlc'].str.contains(f" {first_digit}", na=False)]
-                            if not matched_jibun.empty: # 일치하는게 있을 때만 좁힘 (없으면 도로명 결과 유지)
-                                candidates = matched_jibun
+                            matched = candidates[candidates['platPlc'].str.contains(f" {first_digit}", na=False)]
+                            if not matched.empty: candidates = matched
 
-                        # [3차] 건축년도 대조 (±2년 허용으로 대폭 확대)
+                        # 3단계: 건축년도 ±2년 대조 (있는 경우에만 좁힘)
                         if raw_year.isdigit():
                             y = int(raw_year)
-                            matched_year = candidates[candidates['대장연도'].isin([str(y-2), str(y-1), str(y), str(y+1), str(y+2)])]
-                            if not matched_year.empty: # 오차 범위 내에 있으면 좁힘
-                                candidates = matched_year
+                            years_range = [str(y+off) for off in range(-2, 3)]
+                            matched = candidates[candidates['대장연도'].isin(years_range)]
+                            if not matched.empty: candidates = matched
                         
-                        # [4차] 면적 대조 (연면적 or 건축면적 중 하나라도 ±3% 이내면 합격)
+                        # 4단계: 면적 대조 ±3% (연면적 or 건축면적 대조)
                         if target_area > 0:
-                            matched_area = candidates[
+                            matched = candidates[
                                 ((candidates['totArea'] * 0.97 <= target_area) & (target_area <= candidates['totArea'] * 1.03)) |
                                 ((candidates['archArea'] * 0.97 <= target_area) & (target_area <= candidates['archArea'] * 1.03))
                             ]
-                            if not matched_area.empty:
-                                candidates = matched_area
+                            if not matched.empty: candidates = matched
                         
-                        # 5. 결과 도출
+                        # 결과 정리
                         found_list = candidates['platPlc'].unique().tolist()
                         clean_list = [str(j).split()[-1] for j in found_list]
                         
                         res = row.to_dict()
                         res['추적_유력지번'] = ", ".join(clean_list[:3])
                         
-                        # 신뢰도 시스템
+                        # [PRO 별점 신뢰도]
                         if len(clean_list) == 1:
                             res['신뢰도'] = '⭐⭐⭐ (확실)'
-                        elif 1 < len(clean_list) <= 3:
+                        elif 1 <= len(clean_list) <= 3:
                             res['신뢰도'] = '⭐⭐ (유력)'
                         elif len(clean_list) > 3:
                             res['신뢰도'] = '⭐ (후보많음)'
