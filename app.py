@@ -3,17 +3,15 @@ import pandas as pd
 import io
 
 # --- [관리자 보안 설정] ---
-# 스트림릿 Settings -> Secrets에 password를 설정했다면 아래 줄을 쓰세요.
-# 만약 아직 설정 전이라면 ADMIN_PASSWORD = "원탑7788" 처럼 직접 적으셔도 됩니다.
 try:
     ADMIN_PASSWORD = st.secrets["password"]
 except:
-    ADMIN_PASSWORD = "0901" # 설정 안 되었을 때의 비상용 비번
+    ADMIN_PASSWORD = "0901" 
 # -----------------------
 
 st.set_page_config(page_title="원탑부동산 지번 역추적기", layout="wide")
 
-# 1. 로그인 체크 로직
+# 1. 로그인 체크
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 
@@ -34,6 +32,7 @@ st.title("🕵️‍♂️ 원탑부동산 실거래가 지번 역추적기")
 @st.cache_data
 def load_db():
     try:
+        # 데이터 로드 및 전처리
         df = pd.read_csv('suwon_building_master_v3.csv')
         df['대장연도'] = df['useAprDay'].astype(str).str[:4]
         df['totArea'] = pd.to_numeric(df['totArea'], errors='coerce')
@@ -49,58 +48,67 @@ if master_db is not None:
 
     if uploaded_file:
         try:
-            if uploaded_file.name.endswith('.csv'):
-                user_df = pd.read_csv(uploaded_file, encoding='cp949')
-            else:
-                user_df = pd.read_excel(uploaded_file)
+            # [핵심 수정] 안내 문구를 건너뛰고 진짜 헤더를 찾는 로직
+            found_df = None
+            for i in range(20):  # 상단 20줄까지 탐색
+                uploaded_file.seek(0)
+                if uploaded_file.name.endswith('.csv'):
+                    df_test = pd.read_csv(uploaded_file, skiprows=i, encoding='cp949')
+                else:
+                    df_test = pd.read_excel(uploaded_file, skiprows=i)
+                
+                # 컬럼명 중에 '도로명'이 정확히 포함된 줄이 나오면 멈춤
+                if any("도로명" in str(col) for col in df_test.columns):
+                    found_df = df_test
+                    break
             
-            # 국토부 양식 특유의 상단 빈 줄 제거 로직
-            if "도로명" not in user_df.columns:
-                for i in range(1, 10):
-                    uploaded_file.seek(0)
-                    test_df = pd.read_csv(uploaded_file, skiprows=i, encoding='cp949') if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file, skiprows=i)
-                    if "도로명" in test_df.columns:
-                        user_df = test_df
-                        break
+            if found_df is not None:
+                user_df = found_df
+            else:
+                # 못 찾을 경우 기본 읽기
+                uploaded_file.seek(0)
+                user_df = pd.read_csv(uploaded_file, encoding='cp949') if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
 
+            st.success("파일 읽기 성공! 분석 조건을 확인해주세요.")
+            
             st.write("📋 분석 조건 설정:")
+            def get_idx(cols, key):
+                for i, c in enumerate(cols):
+                    if key in str(c): return i
+                return 0
+
             c1, c2, c3, c4 = st.columns(4)
-            with c1: col_road = st.selectbox("도로명 열", user_df.columns, index=next((i for i, c in enumerate(user_df.columns) if "도로명" in str(c)), 0))
-            with c2: col_jibun = st.selectbox("번지 열", user_df.columns, index=next((i for i, c in enumerate(user_df.columns) if "번지" in str(c)), 0))
-            with c3: col_year = st.selectbox("건축년도 열", user_df.columns, index=next((i for i, c in enumerate(user_df.columns) if "건축년도" in str(c)), 0))
-            with c4: col_area = st.selectbox("면적 열", user_df.columns, index=next((i for i, c in enumerate(user_df.columns) if "면적" in str(c)), 0))
+            with c1: col_road = st.selectbox("도로명 열", user_df.columns, index=get_idx(user_df.columns, "도로명"))
+            with c2: col_jibun = st.selectbox("번지 열", user_df.columns, index=get_idx(user_df.columns, "번지"))
+            with c3: col_year = st.selectbox("건축년도 열", user_df.columns, index=get_idx(user_df.columns, "건축년도"))
+            with c4: col_area = st.selectbox("면적 열", user_df.columns, index=get_idx(user_df.columns, "면적"))
 
             if st.button("🚀 역추적 시작"):
                 results = []
                 p_bar = st.progress(0)
                 
                 for i, row in user_df.iterrows():
-                    # 데이터 보정 로직
                     raw_road = str(row[col_road]).strip()
                     target_road = raw_road.split(' ')[-1] if ' ' in raw_road else raw_road
                     raw_year = str(row[col_year]).strip()[:4]
                     target_area = float(row[col_area]) if pd.notnull(row[col_area]) else 0
                     
-                    # 검색 시작
+                    # 검색 로직
                     cond = master_db['newPlatPlc'].str.contains(target_road, na=False)
                     candidates = master_db[cond]
                     
                     if not candidates.empty:
-                        # 건축년도 ±1년 필터링
+                        # 필터링 (년도 ±1, 면적 ±3%)
                         if raw_year.isdigit():
                             y = int(raw_year)
                             candidates = candidates[candidates['대장연도'].isin([str(y-1), str(y), str(y+1)])]
-                        
-                        # 면적 ±3% 필터링
                         if target_area > 0:
                             candidates = candidates[
                                 (candidates['totArea'] * 0.97 <= target_area) & 
                                 (target_area <= candidates['totArea'] * 1.03)
                             ]
                         
-                        found_list = candidates['platPlc'].unique().tolist()
-                        clean_list = [str(j).split()[-1] for j in found_list]
-                        
+                        clean_list = [str(j).split()[-1] for j in candidates['platPlc'].unique().tolist()]
                         res = row.to_dict()
                         res['유력지번'] = ", ".join(clean_list[:3])
                         res['신뢰도'] = '⭐⭐⭐' if len(clean_list) <= 2 else '⭐'
@@ -118,7 +126,7 @@ if master_db is not None:
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     result_df.to_excel(writer, index=False)
-                st.download_button("📥 엑셀로 저장하기", output.getvalue(), "역추적_결과.xlsx")
+                st.download_button("📥 결과 다운로드", output.getvalue(), "역추적_결과.xlsx")
                 
         except Exception as e:
             st.error(f"파일 처리 중 오류: {e}")
