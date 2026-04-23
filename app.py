@@ -2,16 +2,17 @@ import streamlit as st
 import pandas as pd
 import io
 
-# --- [관리자 보안 설정] ---
+# --- [1. 관리자 보안 설정] ---
+# 스트림릿 Settings -> Secrets에 password를 설정했다면 그걸 쓰고, 없으면 기본값 사용
 try:
     ADMIN_PASSWORD = st.secrets["password"]
 except:
-    ADMIN_PASSWORD = "0901" 
-# -----------------------
+    ADMIN_PASSWORD = "원탑7788" 
+# ---------------------------
 
 st.set_page_config(page_title="원탑부동산 지번 역추적기", layout="wide")
 
-# 1. 로그인 체크
+# [보안] 로그인 체크
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 
@@ -26,19 +27,19 @@ if not st.session_state['logged_in']:
             st.error("비밀번호가 틀렸습니다.")
     st.stop()
 
-# 2. 메인 프로그램 시작
+# --- [2. 메인 프로그램 (로그인 성공 시)] ---
 st.title("🕵️‍♂️ 원탑부동산 실거래가 지번 역추적기")
 
 @st.cache_data
 def load_db():
     try:
-        # 데이터 로드 및 전처리
+        # 수원시 전체 건축물대장 로드 (용량 최적화)
         df = pd.read_csv('suwon_building_master_v3.csv')
         df['대장연도'] = df['useAprDay'].astype(str).str[:4]
         df['totArea'] = pd.to_numeric(df['totArea'], errors='coerce')
         return df
     except Exception as e:
-        st.error(f"데이터베이스 로드 실패: {e}")
+        st.error(f"마스터 DB 로드 실패: {e}")
         return None
 
 master_db = load_db()
@@ -48,85 +49,101 @@ if master_db is not None:
 
     if uploaded_file:
         try:
-            # [핵심 수정] 안내 문구를 건너뛰고 진짜 헤더를 찾는 로직
-            found_df = None
-            for i in range(20):  # 상단 20줄까지 탐색
+            # [지능형] 상단 안내문구 건너뛰고 진짜 헤더(제목) 찾기
+            user_df = None
+            for i in range(15): # 상단 15줄까지 뒤짐
                 uploaded_file.seek(0)
                 if uploaded_file.name.endswith('.csv'):
-                    df_test = pd.read_csv(uploaded_file, skiprows=i, encoding='cp949')
+                    temp_df = pd.read_csv(uploaded_file, skiprows=i, encoding='cp949')
                 else:
-                    df_test = pd.read_excel(uploaded_file, skiprows=i)
+                    temp_df = pd.read_excel(uploaded_file, skiprows=i)
                 
-                # 컬럼명 중에 '도로명'이 정확히 포함된 줄이 나오면 멈춤
-                if any("도로명" in str(col) for col in df_test.columns):
-                    found_df = df_test
+                # '도로명'이 제목줄에 포함되어 있으면 그 줄을 헤더로 확정
+                if any("도로명" in str(col) for col in temp_df.columns):
+                    user_df = temp_df
                     break
             
-            if found_df is not None:
-                user_df = found_df
-            else:
-                # 못 찾을 경우 기본 읽기
-                uploaded_file.seek(0)
-                user_df = pd.read_csv(uploaded_file, encoding='cp949') if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+            if user_df is None:
+                st.error("파일에서 '도로명' 열을 찾을 수 없습니다. 양식을 확인해주세요.")
+                st.stop()
 
-            st.success("파일 읽기 성공! 분석 조건을 확인해주세요.")
+            st.success("파일 분석 준비 완료!")
             
-            st.write("📋 분석 조건 설정:")
-            def get_idx(cols, key):
+            # [자동 열 매칭] 프로그램이 알아서 도로명, 번지, 면적 열을 골라줌
+            def find_col(cols, keyword):
                 for i, c in enumerate(cols):
-                    if key in str(c): return i
+                    if keyword in str(c): return i
                 return 0
 
+            st.write("📋 분석 조건 설정 (자동 매칭됨):")
             c1, c2, c3, c4 = st.columns(4)
-            with c1: col_road = st.selectbox("도로명 열", user_df.columns, index=get_idx(user_df.columns, "도로명"))
-            with c2: col_jibun = st.selectbox("번지 열", user_df.columns, index=get_idx(user_df.columns, "번지"))
-            with c3: col_year = st.selectbox("건축년도 열", user_df.columns, index=get_idx(user_df.columns, "건축년도"))
-            with c4: col_area = st.selectbox("면적 열", user_df.columns, index=get_idx(user_df.columns, "면적"))
+            with c1: col_road = st.selectbox("도로명 열", user_df.columns, index=find_col(user_df.columns, "도로명"))
+            with c2: col_jibun = st.selectbox("번지 열", user_df.columns, index=find_col(user_df.columns, "번지"))
+            with c3: col_year = st.selectbox("건축년도 열", user_df.columns, index=find_col(user_df.columns, "건축년도"))
+            with c4: col_area = st.selectbox("면적 열", user_df.columns, index=find_col(user_df.columns, "면적"))
 
-            if st.button("🚀 역추적 시작"):
+            if st.button("🚀 유력지번 정밀 역추적 시작"):
                 results = []
                 p_bar = st.progress(0)
                 
                 for i, row in user_df.iterrows():
+                    # 1. 데이터 클렌징 (입력값 보정)
                     raw_road = str(row[col_road]).strip()
                     target_road = raw_road.split(' ')[-1] if ' ' in raw_road else raw_road
                     raw_year = str(row[col_year]).strip()[:4]
                     target_area = float(row[col_area]) if pd.notnull(row[col_area]) else 0
                     
-                    # 검색 로직
-                    cond = master_db['newPlatPlc'].str.contains(target_road, na=False)
-                    candidates = master_db[cond]
+                    # 2. 1차 필터: 도로명 일치
+                    candidates = master_db[master_db['newPlatPlc'].str.contains(target_road, na=False)]
                     
                     if not candidates.empty:
-                        # 필터링 (년도 ±1, 면적 ±3%)
+                        # 3. 2차 필터: 건축년도 대조 (±1년 허용)
                         if raw_year.isdigit():
                             y = int(raw_year)
                             candidates = candidates[candidates['대장연도'].isin([str(y-1), str(y), str(y+1)])]
+                        
+                        # 4. 3차 필터: 면적 대조 (±3% 허용 오차)
                         if target_area > 0:
                             candidates = candidates[
                                 (candidates['totArea'] * 0.97 <= target_area) & 
                                 (target_area <= candidates['totArea'] * 1.03)
                             ]
                         
-                        clean_list = [str(j).split()[-1] for j in candidates['platPlc'].unique().tolist()]
+                        # 5. 결과 정리 (중복 제거)
+                        found_list = candidates['platPlc'].unique().tolist()
+                        clean_list = [str(j).split()[-1] for j in found_list]
+                        
                         res = row.to_dict()
-                        res['유력지번'] = ", ".join(clean_list[:3])
-                        res['신뢰도'] = '⭐⭐⭐' if len(clean_list) <= 2 else '⭐'
+                        res['추적_유력지번'] = ", ".join(clean_list[:3]) # 최대 3개까지만 표시
+                        
+                        # [핵심] 신뢰도 별점 로직
+                        if len(clean_list) == 1:
+                            res['신뢰도'] = '⭐⭐⭐ (확실)'
+                        elif 1 < len(clean_list) <= 3:
+                            res['신뢰도'] = '⭐⭐ (유력)'
+                        elif len(clean_list) > 3:
+                            res['신뢰도'] = '⭐ (후보많음)'
+                        else:
+                            res['추적_유력지번'] = '대조불가'
+                            res['신뢰도'] = '❌'
                         results.append(res)
                     else:
                         res = row.to_dict()
-                        res['유력지번'] = '데이터없음'
+                        res['추적_유력지번'] = '데이터없음'
+                        res['신뢰도'] = '❌'
                         results.append(res)
+                    
                     p_bar.progress((i + 1) / len(user_df))
 
                 result_df = pd.DataFrame(results)
-                st.success("🎉 분석 완료!")
+                st.success("🎉 역추적 분석 완료!")
                 st.dataframe(result_df)
 
+                # 엑셀 다운로드 기능
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     result_df.to_excel(writer, index=False)
-                st.download_button("📥 결과 다운로드", output.getvalue(), "역추적_결과.xlsx")
+                st.download_button("📥 분석 결과 다운로드 (엑셀)", output.getvalue(), "원탑_지번추적_결과.xlsx")
                 
         except Exception as e:
-            st.error(f"파일 처리 중 오류: {e}")
+            st.error(f"오류 발생: {e}. 엑셀 파일 형식을 확인해주세요.")
