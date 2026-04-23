@@ -3,11 +3,10 @@ import pandas as pd
 import io
 
 # --- [1. 관리자 보안 설정] ---
-# 스트림릿 Settings -> Secrets에 password를 설정했다면 그걸 쓰고, 없으면 기본값 사용
 try:
     ADMIN_PASSWORD = st.secrets["password"]
 except:
-    ADMIN_PASSWORD = "원탑7788" 
+    ADMIN_PASSWORD = "0901" 
 # ---------------------------
 
 st.set_page_config(page_title="원탑부동산 지번 역추적기", layout="wide")
@@ -28,15 +27,15 @@ if not st.session_state['logged_in']:
     st.stop()
 
 # --- [2. 메인 프로그램 (로그인 성공 시)] ---
-st.title("🕵️‍♂️ 원탑부동산 실거래가 지번 역추적기")
+st.title("🕵️‍♂️ 원탑부동산 실거래가 지번 역추적기 (PRO 엔진)")
 
 @st.cache_data
 def load_db():
     try:
-        # 수원시 전체 건축물대장 로드 (용량 최적화)
         df = pd.read_csv('suwon_building_master_v3.csv')
         df['대장연도'] = df['useAprDay'].astype(str).str[:4]
         df['totArea'] = pd.to_numeric(df['totArea'], errors='coerce')
+        df['archArea'] = pd.to_numeric(df['archArea'], errors='coerce') # [PRO] 건축면적 대조 부활
         return df
     except Exception as e:
         st.error(f"마스터 DB 로드 실패: {e}")
@@ -49,16 +48,15 @@ if master_db is not None:
 
     if uploaded_file:
         try:
-            # [지능형] 상단 안내문구 건너뛰고 진짜 헤더(제목) 찾기
+            # 상단 안내문구 자동 스킵
             user_df = None
-            for i in range(15): # 상단 15줄까지 뒤짐
+            for i in range(15):
                 uploaded_file.seek(0)
                 if uploaded_file.name.endswith('.csv'):
                     temp_df = pd.read_csv(uploaded_file, skiprows=i, encoding='cp949')
                 else:
                     temp_df = pd.read_excel(uploaded_file, skiprows=i)
                 
-                # '도로명'이 제목줄에 포함되어 있으면 그 줄을 헤더로 확정
                 if any("도로명" in str(col) for col in temp_df.columns):
                     user_df = temp_df
                     break
@@ -69,7 +67,6 @@ if master_db is not None:
 
             st.success("파일 분석 준비 완료!")
             
-            # [자동 열 매칭] 프로그램이 알아서 도로명, 번지, 면적 열을 골라줌
             def find_col(cols, keyword):
                 for i, c in enumerate(cols):
                     if keyword in str(c): return i
@@ -87,36 +84,48 @@ if master_db is not None:
                 p_bar = st.progress(0)
                 
                 for i, row in user_df.iterrows():
-                    # 1. 데이터 클렌징 (입력값 보정)
+                    # 1. 입력값 보정
                     raw_road = str(row[col_road]).strip()
                     target_road = raw_road.split(' ')[-1] if ' ' in raw_road else raw_road
+                    blind_jibun = str(row[col_jibun]).strip()
                     raw_year = str(row[col_year]).strip()[:4]
                     target_area = float(row[col_area]) if pd.notnull(row[col_area]) else 0
                     
-                    # 2. 1차 필터: 도로명 일치
+                    # [1차] 도로명 일치 검색
                     candidates = master_db[master_db['newPlatPlc'].str.contains(target_road, na=False)]
                     
                     if not candidates.empty:
-                        # 3. 2차 필터: 건축년도 대조 (±1년 허용)
+                        # [2차] 번지 앞자리 대조 (예: 5** 이면 5로 시작하는 번지만)
+                        first_digit = blind_jibun[0] if blind_jibun and blind_jibun[0].isdigit() else ""
+                        if first_digit:
+                            matched_jibun = candidates[candidates['platPlc'].str.contains(f" {first_digit}", na=False)]
+                            if not matched_jibun.empty: # 일치하는게 있을 때만 좁힘 (없으면 도로명 결과 유지)
+                                candidates = matched_jibun
+
+                        # [3차] 건축년도 대조 (±2년 허용으로 대폭 확대)
                         if raw_year.isdigit():
                             y = int(raw_year)
-                            candidates = candidates[candidates['대장연도'].isin([str(y-1), str(y), str(y+1)])]
+                            matched_year = candidates[candidates['대장연도'].isin([str(y-2), str(y-1), str(y), str(y+1), str(y+2)])]
+                            if not matched_year.empty: # 오차 범위 내에 있으면 좁힘
+                                candidates = matched_year
                         
-                        # 4. 3차 필터: 면적 대조 (±3% 허용 오차)
+                        # [4차] 면적 대조 (연면적 or 건축면적 중 하나라도 ±3% 이내면 합격)
                         if target_area > 0:
-                            candidates = candidates[
-                                (candidates['totArea'] * 0.97 <= target_area) & 
-                                (target_area <= candidates['totArea'] * 1.03)
+                            matched_area = candidates[
+                                ((candidates['totArea'] * 0.97 <= target_area) & (target_area <= candidates['totArea'] * 1.03)) |
+                                ((candidates['archArea'] * 0.97 <= target_area) & (target_area <= candidates['archArea'] * 1.03))
                             ]
+                            if not matched_area.empty:
+                                candidates = matched_area
                         
-                        # 5. 결과 정리 (중복 제거)
+                        # 5. 결과 도출
                         found_list = candidates['platPlc'].unique().tolist()
                         clean_list = [str(j).split()[-1] for j in found_list]
                         
                         res = row.to_dict()
-                        res['추적_유력지번'] = ", ".join(clean_list[:3]) # 최대 3개까지만 표시
+                        res['추적_유력지번'] = ", ".join(clean_list[:3])
                         
-                        # [핵심] 신뢰도 별점 로직
+                        # 신뢰도 시스템
                         if len(clean_list) == 1:
                             res['신뢰도'] = '⭐⭐⭐ (확실)'
                         elif 1 < len(clean_list) <= 3:
@@ -139,11 +148,10 @@ if master_db is not None:
                 st.success("🎉 역추적 분석 완료!")
                 st.dataframe(result_df)
 
-                # 엑셀 다운로드 기능
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     result_df.to_excel(writer, index=False)
                 st.download_button("📥 분석 결과 다운로드 (엑셀)", output.getvalue(), "원탑_지번추적_결과.xlsx")
                 
         except Exception as e:
-            st.error(f"오류 발생: {e}. 엑셀 파일 형식을 확인해주세요.")
+            st.error(f"오류 발생: {e}")
