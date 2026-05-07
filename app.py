@@ -7,7 +7,7 @@ import io
 try:
     ADMIN_PASSWORD = st.secrets["password"]
 except:
-    ADMIN_PASSWORD = "0901" 
+    ADMIN_PASSWORD = "1584" 
 # ---------------------------
 
 st.set_page_config(page_title="원탑부동산 지번 역추적기", layout="wide")
