@@ -2,31 +2,10 @@ import streamlit as st
 import pandas as pd
 import io
 
-# --- [1. 관리자 보안 설정] ---
-try:
-    ADMIN_PASSWORD = st.secrets["password"]
-except:
-    ADMIN_PASSWORD = "1584" 
-# ---------------------------
-
+# 관리자 로그인 로직 전부 삭제됨
 st.set_page_config(page_title="원탑부동산 지번 역추적기 PRO+", layout="wide")
 
-# [보안] 로그인 체크 로직
-if 'logged_in' not in st.session_state:
-    st.session_state['logged_in'] = False
-
-if not st.session_state['logged_in']:
-    st.title("🔐 원탑부동산 전용 시스템")
-    pw = st.text_input("접속 비밀번호를 입력하세요", type="password")
-    if st.button("로그인"):
-        if pw == ADMIN_PASSWORD:
-            st.session_state['logged_in'] = True
-            st.rerun()
-        else:
-            st.error("비밀번호가 틀렸습니다.")
-    st.stop()
-
-# --- [2. 메인 프로그램 시작] ---
+# --- [메인 프로그램 시작] ---
 st.title("🕵️‍♂️ 원탑부동산 실거래가 지번 역추적기 (다중파일 지원)")
 
 @st.cache_data
@@ -88,7 +67,7 @@ if master_db is not None:
                     if keyword in str(c): return c
                 return None
 
-            # --- 분석 조건 인터페이스 (시군구, 계약기간 숨김) ---
+            # --- 분석 조건 인터페이스 ---
             st.write("📋 분석 조건 (필수 4개 열만 확인해주세요):")
             c1, c2, c3, c4 = st.columns(4)
             with c1: col_road = st.selectbox("도로명 열", user_df.columns, index=find_col_index(user_df.columns, "도로명"))
