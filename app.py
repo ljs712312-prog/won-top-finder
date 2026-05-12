@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import io
 
-# 관리자 로그인 로직 전부 삭제됨
 st.set_page_config(page_title="원탑부동산 지번 역추적기 PRO+", layout="wide")
 
 # --- [메인 프로그램 시작] ---
@@ -138,12 +137,12 @@ if master_db is not None:
                                 ]
                                 if not matched.empty: candidates = matched
                             
-                            # 결과 정리: 동 이름 + 번지 조합으로 리스트 생성
+                            # 결과 정리: 동 이름 + 번지 조합으로 리스트 생성 ('번지' 텍스트 제거)
                             found_list = candidates['platPlc'].unique().tolist()
                             if dong_name:
-                                clean_list = [f"{dong_name} {str(j).split()[-1]}" for j in found_list]
+                                clean_list = [f"{dong_name} {str(j).split()[-1].replace('번지', '')}" for j in found_list]
                             else:
-                                clean_list = [str(j).split()[-1] for j in found_list]
+                                clean_list = [str(j).split()[-1].replace('번지', '') for j in found_list]
                             
                             res = row.to_dict()
                             res['추적_유력지번'] = ", ".join(clean_list[:3])
