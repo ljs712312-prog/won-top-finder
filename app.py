@@ -9,7 +9,7 @@ except:
     ADMIN_PASSWORD = "1584" 
 # ---------------------------
 
-st.set_page_config(page_title="원탑부동산 지번 역추적기 PRO", layout="wide")
+st.set_page_config(page_title="원탑부동산 지번 역추적기 PRO+", layout="wide")
 
 # [보안] 로그인 체크 로직
 if 'logged_in' not in st.session_state:
@@ -27,7 +27,7 @@ if not st.session_state['logged_in']:
     st.stop()
 
 # --- [2. 메인 프로그램 시작] ---
-st.title("🕵️‍♂️ 원탑부동산 실거래가 지번 역추적기 (계약기간 검색 + 동지번 표시)")
+st.title("🕵️‍♂️ 원탑부동산 실거래가 지번 역추적기 (다중파일 지원)")
 
 @st.cache_data
 def load_db():
@@ -45,57 +45,75 @@ def load_db():
 master_db = load_db()
 
 if master_db is not None:
-    uploaded_file = st.file_uploader("👉 분석할 엑셀/CSV 파일을 올려주세요.", type=['xlsx', 'csv'])
+    # accept_multiple_files=True 옵션으로 다중 업로드 활성화
+    uploaded_files = st.file_uploader("👉 분석할 엑셀/CSV 파일을 한 번에 여러 개 올려주세요 (최대 4개 권장).", type=['xlsx', 'csv'], accept_multiple_files=True)
 
-    if uploaded_file:
+    if uploaded_files:
         try:
-            # 헤더 자동 찾기 로직
-            user_df = None
-            for i in range(20):
-                uploaded_file.seek(0)
-                if uploaded_file.name.endswith('.csv'):
-                    temp_df = pd.read_csv(uploaded_file, skiprows=i, encoding='cp949')
-                else:
-                    temp_df = pd.read_excel(uploaded_file, skiprows=i)
-                
-                if any("도로명" in str(col) for col in temp_df.columns):
-                    user_df = temp_df
-                    break
+            df_list = []
             
-            if user_df is None:
-                st.error("파일에서 '도로명' 열을 찾을 수 없습니다.")
+            # 업로드된 여러 파일을 하나씩 읽어서 리스트에 담기
+            for uf in uploaded_files:
+                temp_df = None
+                for i in range(20):
+                    uf.seek(0)
+                    if uf.name.endswith('.csv'):
+                        t_df = pd.read_csv(uf, skiprows=i, encoding='cp949')
+                    else:
+                        t_df = pd.read_excel(uf, skiprows=i)
+                    
+                    if any("도로명" in str(col) for col in t_df.columns):
+                        temp_df = t_df
+                        break
+                
+                if temp_df is not None:
+                    temp_df['출처파일'] = uf.name # 결과 확인용 출처 파일명 기록
+                    df_list.append(temp_df)
+            
+            if not df_list:
+                st.error("올려주신 파일들에서 '도로명' 열을 찾을 수 없습니다.")
                 st.stop()
 
-            st.success("파일 분석 준비 완료!")
+            # 여러 파일의 데이터를 하나의 통합 데이터프레임으로 병합
+            user_df = pd.concat(df_list, ignore_index=True)
+            st.success(f"총 {len(uploaded_files)}개의 파일, {len(user_df)}건의 데이터 분석 준비 완료!")
             
-            def find_col(cols, keyword):
+            def find_col_index(cols, keyword):
                 for i, c in enumerate(cols):
                     if keyword in str(c): return i
                 return 0
+                
+            def get_col_name(cols, keyword):
+                for c in cols:
+                    if keyword in str(c): return c
+                return None
 
-            # --- 분석 조건 인터페이스 ---
-            st.write("📋 분석 조건 및 필터 설정:")
-            
-            # 시군구 열을 추가로 받기 위해 컬럼을 6개로 분할
-            c1, c2, c3, c4, c5, c6 = st.columns(6)
-            with c1: col_sigungu = st.selectbox("시군구 열", user_df.columns, index=find_col(user_df.columns, "시군구"))
-            with c2: col_road = st.selectbox("도로명 열", user_df.columns, index=find_col(user_df.columns, "도로명"))
-            with c3: col_jibun = st.selectbox("번지 열", user_df.columns, index=find_col(user_df.columns, "번지"))
-            with c4: col_year = st.selectbox("건축년도 열", user_df.columns, index=find_col(user_df.columns, "건축년도"))
-            with c5: col_area = st.selectbox("면적 열", user_df.columns, index=find_col(user_df.columns, "면적"))
-            with c6: col_contract = st.selectbox("계약기간 열", user_df.columns, index=find_col(user_df.columns, "계약기간"))
+            # --- 분석 조건 인터페이스 (시군구, 계약기간 숨김) ---
+            st.write("📋 분석 조건 (필수 4개 열만 확인해주세요):")
+            c1, c2, c3, c4 = st.columns(4)
+            with c1: col_road = st.selectbox("도로명 열", user_df.columns, index=find_col_index(user_df.columns, "도로명"))
+            with c2: col_jibun = st.selectbox("번지 열", user_df.columns, index=find_col_index(user_df.columns, "번지"))
+            with c3: col_year = st.selectbox("건축년도 열", user_df.columns, index=find_col_index(user_df.columns, "건축년도"))
+            with c4: col_area = st.selectbox("면적 열", user_df.columns, index=find_col_index(user_df.columns, "면적"))
+
+            # 백그라운드 자동 매칭
+            col_sigungu = get_col_name(user_df.columns, "시군구")
+            col_contract = get_col_name(user_df.columns, "계약기간")
 
             # 계약기간 필터 입력 칸
-            target_period = st.text_input("🔍 찾고 싶은 계약 기간 (예: 202611 입력 시 해당 월 포함된 행만 분석)", "")
+            target_period = st.text_input("🔍 찾고 싶은 계약 기간 (예: 202611 입력 시 해당 월 포함된 행만 필터링)", "")
 
-            if st.button("🚀 유력지번 정밀 역추적 시작"):
-                # 계약기간 필터 적용
-                if target_period:
+            if st.button("🚀 다중 파일 통합 역추적 시작"):
+                # 계약기간 필터 적용 (열이 존재할 경우에만)
+                if target_period and col_contract:
                     working_df = user_df[user_df[col_contract].astype(str).str.contains(target_period, na=False)]
-                    st.info(f"검색어 '{target_period}'가 포함된 {len(working_df)}건의 데이터를 분석합니다.")
+                    st.info(f"검색어 '{target_period}'가 포함된 {len(working_df)}건의 데이터를 추려냈습니다.")
+                elif target_period and not col_contract:
+                    st.warning("'계약기간' 열을 자동으로 찾을 수 없어 전체 데이터를 분석합니다.")
+                    working_df = user_df
                 else:
                     working_df = user_df
-                    st.info("전체 데이터를 분석합니다.")
+                    st.info("조건 없이 전체 데이터를 분석합니다.")
 
                 if working_df.empty:
                     st.warning("입력하신 계약 기간과 일치하는 데이터가 없습니다.")
@@ -111,8 +129,8 @@ if master_db is not None:
                         raw_year = str(row[col_year]).strip()[:4]
                         target_area = float(row[col_area]) if pd.notnull(row[col_area]) else 0
                         
-                        # 시군구 데이터에서 '동' 이름만 추출 (예: '경기도 수원시 팔달구 화서동' -> '화서동')
-                        raw_sigungu = str(row[col_sigungu]).strip()
+                        # 시군구 데이터에서 '동' 이름 자동 추출 (열이 없으면 공백 처리)
+                        raw_sigungu = str(row[col_sigungu]).strip() if col_sigungu else ""
                         dong_name = raw_sigungu.split()[-1] if ' ' in raw_sigungu else raw_sigungu
                         
                         # [PRO 엔진 핵심 로직]
@@ -143,7 +161,10 @@ if master_db is not None:
                             
                             # 결과 정리: 동 이름 + 번지 조합으로 리스트 생성
                             found_list = candidates['platPlc'].unique().tolist()
-                            clean_list = [f"{dong_name} {str(j).split()[-1]}" for j in found_list]
+                            if dong_name:
+                                clean_list = [f"{dong_name} {str(j).split()[-1]}" for j in found_list]
+                            else:
+                                clean_list = [str(j).split()[-1] for j in found_list]
                             
                             res = row.to_dict()
                             res['추적_유력지번'] = ", ".join(clean_list[:3])
@@ -168,13 +189,18 @@ if master_db is not None:
                         p_bar.progress((i + 1) / len(working_df))
 
                     result_df = pd.DataFrame(results)
-                    st.success(f"🎉 {len(result_df)}건 역추적 분석 완료!")
+                    # 보기 편하게 출처파일을 맨 앞으로 이동
+                    cols = result_df.columns.tolist()
+                    cols.insert(0, cols.pop(cols.index('출처파일')))
+                    result_df = result_df[cols]
+
+                    st.success(f"🎉 총 {len(result_df)}건 역추적 분석 완료!")
                     st.dataframe(result_df)
 
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                         result_df.to_excel(writer, index=False)
-                    st.download_button("📥 분석 결과 다운로드 (엑셀)", output.getvalue(), "원탑_지번추적_결과.xlsx")
+                    st.download_button("📥 통합 분석 결과 다운로드 (엑셀)", output.getvalue(), "원탑_통합_지번추적_결과.xlsx")
                     
         except Exception as e:
             st.error(f"오류 발생: {e}")
